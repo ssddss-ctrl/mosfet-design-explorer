@@ -34,7 +34,6 @@ def apply_style():
         "axes.spines.top":      False,
         "axes.spines.right":    False,
         "axes.grid":            True,
-        "axes.grid.alpha":      0.2,
         "axes.labelsize":       12,
         "axes.titlesize":       13,
         "axes.prop_cycle":      mpl.cycler(color=[
@@ -45,6 +44,11 @@ def apply_style():
             "#bb86fc",   # violet     — secondary
             "#ff8c00",   # orange     — tertiary
         ]),
+
+        # Grid
+        "grid.color":           "#444444",
+        "grid.alpha":           0.2,
+        "grid.linewidth":       0.8,
 
         # Lines
         "lines.linewidth":      2.2,
