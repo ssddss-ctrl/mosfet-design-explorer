@@ -13,7 +13,9 @@ Covers:
 Unit convention: energy in eV, concentration in cm^-3, mobility in cm^2/V·s
 
 References:
-    Streetman Ch. 3.3.1 - 3.3.4, 3.4.1 - 3.4.3
+    Streetman & Banerjee, Solid State Electronic Devices, 7th ed.
+    §3.3.1 - §3.3.4  Fermi level, carrier concentrations, temperature dependence
+    §3.4.1 - §3.4.3  Conductivity, mobility, Matthiessen's rule
 """
 
 import numpy as np
@@ -29,13 +31,15 @@ from .constants import (
 # Effective density of states
 # ---------------------------------------------------------------------------
 
-def effective_DOS(T=300):
+def effective_DOS(T: float = 300) -> tuple[float, float]:
     """
     Effective density of states Nc and Nv at temperature T [cm^-3].
 
-    Both scale as T^(3/2) from their 300K reference values.
-    From Streetman eq. 3-20:
-        Nc = 2 * (2*pi*mn*kT / h^2)^(3/2)
+    Both scale as T^(3/2) from their 300 K reference values
+    (Streetman eq. 3-15):
+
+        Nc(T) = Nc_300 * (T / 300)^(3/2)
+        Nv(T) = Nv_300 * (T / 300)^(3/2)
 
     Parameters
     ----------
@@ -44,7 +48,7 @@ def effective_DOS(T=300):
 
     Returns
     -------
-    Nc, Nv : float
+    Nc, Nv : tuple of float
         Effective DOS for conduction and valence bands [cm^-3].
     """
     Nc = Nc_300 * (T / 300) ** 1.5
@@ -56,17 +60,19 @@ def effective_DOS(T=300):
 # Intrinsic carrier concentration
 # ---------------------------------------------------------------------------
 
-def ni(T=300):
+def ni(T: float = 300) -> float:
     """
     Intrinsic carrier concentration of silicon [cm^-3].
 
-    From mass action law (Streetman eq. 3-25):
+    Derived from the mass-action product at thermal equilibrium
+    (Streetman eq. 3-19):
+
         ni^2 = Nc * Nv * exp(-Eg / kT)
 
     Parameters
     ----------
     T : float
-        Temperature [K].
+        Temperature [K]. Valid range: roughly 150-900 K.
 
     Returns
     -------
@@ -81,16 +87,27 @@ def ni(T=300):
 # Equilibrium carrier concentrations
 # ---------------------------------------------------------------------------
 
-def carrier_concentrations(Na=0, Nd=0, T=300):
+def carrier_concentrations(
+    Na: float = 0,
+    Nd: float = 0,
+    T:  float = 300,
+) -> tuple[float, float]:
     """
     Equilibrium electron and hole concentrations [cm^-3].
 
-    Uses the exact quadratic solution to charge neutrality.
-    Valid above ~150K (full ionization assumed — no freeze-out).
+    Uses the exact quadratic solution to charge neutrality
+    (Streetman eq. 3-21):
 
-    For n-type: n^2 - Nd*n - ni^2 = 0
-    For p-type: p^2 - Na*p - ni^2 = 0
-    General:    solves (Nd - Na) net doping case
+        p0 + Nd = n0 + Na   (charge neutrality)
+        n0 * p0 = ni^2      (mass-action law, eq. 3-18)
+
+    Solving for n0:
+
+        n0 = (Nd - Na)/2 + sqrt(((Nd - Na)/2)^2 + ni^2)
+
+    then p0 = ni^2 / n0.
+
+    Valid above ~150 K (assumes full ionisation — no freeze-out).
 
     Parameters
     ----------
@@ -103,7 +120,7 @@ def carrier_concentrations(Na=0, Nd=0, T=300):
 
     Returns
     -------
-    n0, p0 : float
+    n0, p0 : tuple of float
         Electron and hole concentrations [cm^-3].
     """
     ni_val = ni(T)
@@ -117,13 +134,20 @@ def carrier_concentrations(Na=0, Nd=0, T=300):
 # Fermi level
 # ---------------------------------------------------------------------------
 
-def fermi_level(Na=0, Nd=0, T=300):
+def fermi_level(
+    Na: float = 0,
+    Nd: float = 0,
+    T:  float = 300,
+) -> float:
     """
     Fermi level position relative to Ei [eV].
 
-    From Streetman eq. 3-23 and 3-24:
-        EF - Ei = kT * ln(n0 / ni)    (n-type: positive)
-        EF - Ei = -kT * ln(p0 / ni)   (p-type: negative)
+    From Streetman eqs. 3-23 and 3-24:
+
+        EF - Ei =  kT * ln(n0 / ni)    (n-type: positive)
+        EF - Ei = -kT * ln(p0 / ni)    (p-type: negative)
+
+    Both reduce to kT * ln(n0 / ni), which this function returns.
 
     Parameters
     ----------
@@ -148,14 +172,16 @@ def fermi_level(Na=0, Nd=0, T=300):
 # Mobility — Matthiessen's rule
 # ---------------------------------------------------------------------------
 
-def mu_lattice(T=300, carrier='n'):
+def mu_lattice(T: float = 300, carrier: str = 'n') -> float:
     """
     Lattice scattering limited mobility [cm^2/V·s].
 
-    Decreases with T due to increased lattice vibrations.
-    Empirical exponents for Si (Streetman 3.4.3):
-        mu_L ~ T^(-2.4) for electrons
-        mu_L ~ T^(-2.2) for holes
+    Decreases with temperature due to increased phonon scattering
+    (Streetman §3.4.3):
+
+        mu_L(T) = mu_300 * (T / 300)^(-alpha)
+
+    where alpha ≈ 2.4 for electrons, 2.2 for holes (empirical Si values).
 
     Parameters
     ----------
@@ -175,19 +201,26 @@ def mu_lattice(T=300, carrier='n'):
         return mu_p_300 * (T / 300) ** (-alpha_p)
 
 
-def mu_impurity(T=300, N_I=0, carrier='n'):
+def mu_impurity(
+    T:       float = 300,
+    N_I:     float = 0,
+    carrier: str   = 'n',
+) -> float:
     """
     Impurity scattering limited mobility [cm^2/V·s].
 
-    Increases with T (faster carriers deflected less by each ion).
+    Increases with T (faster carriers deflect less per ion encounter).
     Decreases with N_I (more ions = more scattering).
+    Based on Conwell-Weisskopf model (Streetman §3.4.3):
+
+        mu_I(T, N_I) = mu_I_ref * (T / 300)^(3/2) * (1e17 / N_I)
 
     Parameters
     ----------
     T : float
         Temperature [K].
     N_I : float
-        Total ionized impurity concentration Na + Nd [cm^-3].
+        Total ionised impurity concentration Na + Nd [cm^-3].
     carrier : str
         'n' for electrons, 'p' for holes.
 
@@ -202,18 +235,22 @@ def mu_impurity(T=300, N_I=0, carrier='n'):
     return ref * (T / 300) ** 1.5 * (1e17 / N_I)
 
 
-def mobility_n(T=300, N_I=0):
+def mobility_n(T: float = 300, N_I: float = 0) -> float:
     """
     Total electron mobility via Matthiessen's rule [cm^2/V·s].
 
-    1/mu = 1/mu_lattice + 1/mu_impurity
+    Combines lattice and impurity scattering (Streetman §3.4.3):
+
+        1/mu = 1/mu_lattice + 1/mu_impurity
+
+    The lowest mobility mechanism dominates.
 
     Parameters
     ----------
     T : float
         Temperature [K].
     N_I : float
-        Total ionized impurity concentration [cm^-3].
+        Total ionised impurity concentration Na + Nd [cm^-3].
 
     Returns
     -------
@@ -222,19 +259,23 @@ def mobility_n(T=300, N_I=0):
     """
     mu_L = mu_lattice(T, 'n')
     mu_I = mu_impurity(T, N_I, 'n')
-    return 1.0 / (1.0/mu_L + 1.0/mu_I)
+    return 1.0 / (1.0 / mu_L + 1.0 / mu_I)
 
 
-def mobility_p(T=300, N_I=0):
+def mobility_p(T: float = 300, N_I: float = 0) -> float:
     """
     Total hole mobility via Matthiessen's rule [cm^2/V·s].
+
+    Combines lattice and impurity scattering (Streetman §3.4.3):
+
+        1/mu = 1/mu_lattice + 1/mu_impurity
 
     Parameters
     ----------
     T : float
         Temperature [K].
     N_I : float
-        Total ionized impurity concentration [cm^-3].
+        Total ionised impurity concentration Na + Nd [cm^-3].
 
     Returns
     -------
@@ -243,16 +284,24 @@ def mobility_p(T=300, N_I=0):
     """
     mu_L = mu_lattice(T, 'p')
     mu_I = mu_impurity(T, N_I, 'p')
-    return 1.0 / (1.0/mu_L + 1.0/mu_I)
+    return 1.0 / (1.0 / mu_L + 1.0 / mu_I)
 
 
 # ---------------------------------------------------------------------------
 # Conductivity and resistivity
 # ---------------------------------------------------------------------------
 
-def conductivity(Na=0, Nd=0, T=300):
+def conductivity(
+    Na: float = 0,
+    Nd: float = 0,
+    T:  float = 300,
+) -> float:
     """
-    Electrical conductivity sigma = q*(n*mu_n + p*mu_p) [S/cm].
+    Electrical conductivity [S/cm].
+
+    From Streetman eq. 3-30 (drift current density):
+
+        J = q * (n * mu_n + p * mu_p) * E  →  sigma = q * (n * mu_n + p * mu_p)
 
     Parameters
     ----------
@@ -266,7 +315,7 @@ def conductivity(Na=0, Nd=0, T=300):
     Returns
     -------
     float
-        Conductivity [S/cm].
+        Conductivity sigma [S/cm].
     """
     n0, p0 = carrier_concentrations(Na, Nd, T)
     N_I = Na + Nd
@@ -275,9 +324,15 @@ def conductivity(Na=0, Nd=0, T=300):
     return q * (n0 * mu_n + p0 * mu_p)
 
 
-def resistivity(Na=0, Nd=0, T=300):
+def resistivity(
+    Na: float = 0,
+    Nd: float = 0,
+    T:  float = 300,
+) -> float:
     """
-    Electrical resistivity rho = 1/sigma [Ohm·cm].
+    Electrical resistivity [Ohm·cm].
+
+    rho = 1 / sigma   (Streetman §3.4.2)
 
     Parameters
     ----------
@@ -291,6 +346,6 @@ def resistivity(Na=0, Nd=0, T=300):
     Returns
     -------
     float
-        Resistivity [Ohm·cm].
+        Resistivity rho [Ohm·cm].
     """
     return 1.0 / conductivity(Na, Nd, T)

@@ -14,11 +14,18 @@ import matplotlib.pyplot as plt
 import matplotlib as mpl
 
 
-def apply_style():
+def apply_style() -> None:
     """
-    Apply the project-wide matplotlib style.
-    Dark background matching the simulation notebooks.
-    Call once at the top of every notebook or script.
+    Apply the project-wide matplotlib dark theme.
+
+    Patches matplotlib.rcParams in-place. Call once at the top of every
+    notebook or script before creating any figures.
+
+    Notes
+    -----
+    Uses ``grid.alpha`` (not ``axes.grid.alpha``) for compatibility with
+    matplotlib >= 3.6. Avoid LaTeX in labels — use unicode directly
+    (µ, Ω, cm⁻³, etc.) to prevent rendering overhead with this dark theme.
     """
     mpl.rcParams.update({
         # Figure
@@ -75,28 +82,48 @@ def apply_style():
     })
 
 
-def new_fig(nrows=1, ncols=1, **kwargs):
+def new_fig(nrows: int = 1, ncols: int = 1, **kwargs) -> tuple:
     """
-    Create a new figure and axes with project style applied.
+    Create a new figure and axes with the project style applied.
 
     Parameters
     ----------
-    nrows, ncols : int
-        Subplot grid dimensions.
+    nrows : int
+        Number of subplot rows.
+    ncols : int
+        Number of subplot columns.
     **kwargs
-        Passed to plt.subplots().
+        Passed directly to plt.subplots().
 
     Returns
     -------
-    fig, ax
+    fig, ax : Figure and Axes (or array of Axes if nrows/ncols > 1)
     """
     apply_style()
     return plt.subplots(nrows, ncols, **kwargs)
 
 
-def label_axes(ax, title="", xlabel="", ylabel="", legend=False):
+def label_axes(
+    ax,
+    title:  str  = "",
+    xlabel: str  = "",
+    ylabel: str  = "",
+    legend: bool = False,
+) -> None:
     """
     Set title, axis labels, and optionally show legend.
+
+    Parameters
+    ----------
+    ax : matplotlib Axes
+    title : str
+        Axes title.
+    xlabel : str
+        x-axis label.
+    ylabel : str
+        y-axis label.
+    legend : bool
+        If True, call ax.legend().
     """
     if title:
         ax.set_title(title)
@@ -108,26 +135,43 @@ def label_axes(ax, title="", xlabel="", ylabel="", legend=False):
         ax.legend()
 
 
-def annotate_vline(ax, x, label, color="gray"):
+def annotate_vline(
+    ax,
+    x:     float,
+    label: str,
+    color: str = "gray",
+) -> None:
     """
     Draw a vertical dashed reference line with a text label.
-    Useful for marking VT, VGS, etc. on I-V plots.
+
+    Useful for marking Vt, Vgs, pinch-off, etc. on I-V plots.
+
+    Parameters
+    ----------
+    ax : matplotlib Axes
+    x : float
+        x-position of the vertical line.
+    label : str
+        Text to display at the top of the line.
+    color : str
+        Line and label colour. Default 'gray'.
     """
     ax.axvline(x, color=color, linestyle="--", linewidth=1.2, alpha=0.7)
     ymax = ax.get_ylim()[1]
     ax.text(x, ymax * 0.92, f" {label}", color=color, fontsize=9, va="top")
 
 
-def save_fig(fig, path, dpi=150):
+def save_fig(fig, path: str, dpi: int = 150) -> None:
     """
-    Save figure to file.
+    Save a figure to disk.
 
     Parameters
     ----------
     fig : matplotlib Figure
     path : str
-        Output path, e.g. 'assets/week1_ni_vs_T.png'
+        Output path, e.g. 'assets/week2_ni_vs_T.png'.
     dpi : int
+        Resolution. Default 150.
     """
     fig.savefig(path, dpi=dpi, bbox_inches="tight", facecolor=fig.get_facecolor())
     print(f"Saved: {path}")
