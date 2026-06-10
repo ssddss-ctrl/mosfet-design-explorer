@@ -14,14 +14,13 @@ Unit convention: energy in eV, concentration in cm^-3, mobility in cm^2/V·s
 
 References:
     Streetman & Banerjee, Solid State Electronic Devices, 7th ed.
-    §3.3.1 - §3.3.4  Fermi level, carrier concentrations, temperature dependence
-    §3.4.1 - §3.4.3  Conductivity, mobility, Matthiessen's rule
+    §3.3.1 – §3.3.4  Fermi level, carrier concentrations, temperature dependence
+    §3.4.1 – §3.4.3  Conductivity, mobility, Matthiessen's rule
 """
 
 import numpy as np
 from .constants import (
-    k_B, E_g, E_c, E_v, E_i,
-    Nc_300, Nv_300, q,
+    k_B, E_g, Nc_300, Nv_300, ni_300, q,
     mu_n_300, mu_p_300, alpha_n, alpha_p,
     mu_I_n_ref, mu_I_p_ref
 )
@@ -36,7 +35,7 @@ def effective_DOS(T: float = 300) -> tuple[float, float]:
     Effective density of states Nc and Nv at temperature T [cm^-3].
 
     Both scale as T^(3/2) from their 300 K reference values
-    (Streetman eq. 3-15):
+    (Streetman eq. 3-16):
 
         Nc(T) = Nc_300 * (T / 300)^(3/2)
         Nv(T) = Nv_300 * (T / 300)^(3/2)
@@ -64,23 +63,33 @@ def ni(T: float = 300) -> float:
     """
     Intrinsic carrier concentration of silicon [cm^-3].
 
-    Derived from the mass-action product at thermal equilibrium
-    (Streetman eq. 3-19):
+    From Streetman eq. 3-26, ni(T) has the form:
 
-        ni^2 = Nc * Nv * exp(-Eg / kT)
+        ni(T) ∝ T^(3/2) * exp(-Eg / 2kT)
+
+    Rather than computing ni from sqrt(Nc*Nv*exp(-Eg/kT)) with a fixed Eg
+    (which gives ~6.7e9 at 300 K due to neglecting the temperature dependence
+    of the bandgap), we anchor to the textbook's empirical value
+    ni_300 = 1.5e10 cm^-3 (Streetman eq. 3-23, p.116) and scale with T:
+
+        ni(T) = ni_300 * (T/300)^(3/2) * exp(-Eg/(2*k_B) * (1/T - 1/300))
+
+    This preserves the correct room-temperature value and the correct
+    temperature dependence from the Boltzmann factor.
 
     Parameters
     ----------
     T : float
-        Temperature [K]. Valid range: roughly 150-900 K.
+        Temperature [K]. Valid range: roughly 200–700 K.
 
     Returns
     -------
     float
         Intrinsic carrier concentration [cm^-3].
     """
-    Nc, Nv = effective_DOS(T)
-    return np.sqrt(Nc * Nv * np.exp(-E_g / (k_B * T)))
+    T_ratio   = (T / 300) ** 1.5
+    boltzmann = np.exp(-E_g / (2 * k_B) * (1.0 / T - 1.0 / 300.0))
+    return ni_300 * T_ratio * boltzmann
 
 
 # ---------------------------------------------------------------------------
@@ -96,10 +105,10 @@ def carrier_concentrations(
     Equilibrium electron and hole concentrations [cm^-3].
 
     Uses the exact quadratic solution to charge neutrality
-    (Streetman eq. 3-21):
+    (Streetman eq. 3-28):
 
         p0 + Nd = n0 + Na   (charge neutrality)
-        n0 * p0 = ni^2      (mass-action law, eq. 3-18)
+        n0 * p0 = ni^2      (mass-action law, eq. 3-24)
 
     Solving for n0:
 
@@ -142,7 +151,7 @@ def fermi_level(
     """
     Fermi level position relative to Ei [eV].
 
-    From Streetman eqs. 3-23 and 3-24:
+    From Streetman eqs. 3-25a and 3-25b:
 
         EF - Ei =  kT * ln(n0 / ni)    (n-type: positive)
         EF - Ei = -kT * ln(p0 / ni)    (p-type: negative)
@@ -299,9 +308,9 @@ def conductivity(
     """
     Electrical conductivity [S/cm].
 
-    From Streetman eq. 3-30 (drift current density):
+    From Streetman eq. 3-40:
 
-        J = q * (n * mu_n + p * mu_p) * E  →  sigma = q * (n * mu_n + p * mu_p)
+        sigma = q * (n * mu_n + p * mu_p)
 
     Parameters
     ----------
