@@ -5,13 +5,8 @@ MOS capacitor electrostatics for an NMOS device.
 
 This module provides functions for computing the key electrostatic
 quantities of the MOS system: oxide capacitance, flat-band voltage,
-surface potential at threshold, threshold voltage, and depletion charge.
-
-Implementation status
----------------------
-Week 3: Skeleton only — all function signatures, docstrings, and
-physics derivations are defined. Numerical implementations are stubbed
-with ``raise NotImplementedError`` and will be filled in Week 4.
+surface potential at threshold, threshold voltage, depletion charge,
+and the body effect on threshold voltage.
 
 Physical picture
 ----------------
@@ -20,7 +15,7 @@ voltage VG shifts the semiconductor surface from flat-band through
 depletion into inversion.
 
 Key quantities (all in Volts or eV):
-    phi_F  : bulk Fermi potential = (Ei - EF) / q        [V]
+    phi_F  : bulk Fermi potential = -(EF - Ei) / q       [V]
     Vfb    : flat-band voltage                            [V]
     phi_s  : surface potential (= 2*phi_F at threshold)  [V]
     Vt     : threshold voltage                            [V]
@@ -32,10 +27,11 @@ References
 Streetman & Banerjee, Solid State Electronic Devices, 7th ed.
     §5.2  The MOS Capacitor
     §5.3  Threshold Voltage
-    §5.4  The MOS Field-Effect Transistor
+    §6.4.4 Body Effect
 """
 
-from .constants import eps_SiO2, eps_Si, eps_0, q
+import numpy as np
+from .constants import eps_SiO2_abs, eps_Si_abs, q
 from .carriers import fermi_level
 
 
@@ -65,16 +61,9 @@ def Cox(t_ox: float) -> float:
     Examples
     --------
     >>> Cox(5e-7)   # 5 nm oxide
-    6.9e-07         # F/cm²
-
-    Raises
-    ------
-    NotImplementedError
-        Scheduled for Week 4.
+    6.906e-07       # F/cm²
     """
-    raise NotImplementedError(
-        "Cox: Week 4. Formula: (eps_SiO2 * eps_0) / t_ox"
-    )
+    return eps_SiO2_abs / t_ox
 
 
 # ---------------------------------------------------------------------------
@@ -86,12 +75,12 @@ def phi_F(Na: float, T: float = 300.0) -> float:
     Bulk Fermi potential for a p-type substrate [V].
 
     Defined as the energy separation between Ei and EF expressed as
-    a voltage. Positive for p-type (EF below Ei):
+    a voltage. Positive for p-type (EF is below Ei):
 
         phi_F = -(EF - Ei) / q     (Streetman §5.2)
 
-    Uses ``fermi_level()`` from carriers.py, which solves the exact
-    charge-neutrality quadratic (Streetman eq. 3-21).
+    Uses ``fermi_level()`` from carriers.py, which returns (EF - Ei) in eV.
+    For p-type, fermi_level() is negative, so negating gives positive phi_F.
 
     Parameters
     ----------
@@ -109,15 +98,8 @@ def phi_F(Na: float, T: float = 300.0) -> float:
     --------
     >>> phi_F(1e17)
     ~0.41 V
-
-    Raises
-    ------
-    NotImplementedError
-        Scheduled for Week 4.
     """
-    raise NotImplementedError(
-        "phi_F: Week 4. Formula: -fermi_level(Na=Na, Nd=0, T=T)"
-    )
+    return -fermi_level(Na=Na, Nd=0.0, T=T)
 
 
 # ---------------------------------------------------------------------------
@@ -152,15 +134,8 @@ def Vfb(
     -------
     float
         Flat-band voltage Vfb [V].
-
-    Raises
-    ------
-    NotImplementedError
-        Scheduled for Week 4.
     """
-    raise NotImplementedError(
-        "Vfb: Week 4. Formula: phi_ms - Q_ox / Cox(t_ox)"
-    )
+    return phi_ms - Q_ox / Cox(t_ox)
 
 
 # ---------------------------------------------------------------------------
@@ -187,15 +162,9 @@ def x_dmax(Na: float, T: float = 300.0) -> float:
     -------
     float
         Maximum depletion width [cm].
-
-    Raises
-    ------
-    NotImplementedError
-        Scheduled for Week 4.
     """
-    raise NotImplementedError(
-        "x_dmax: Week 4. Formula: sqrt(2 * eps_Si * eps_0 * 2*phi_F(Na,T) / (q * Na))"
-    )
+    phi_f = phi_F(Na, T)
+    return np.sqrt(2.0 * eps_Si_abs * 2.0 * phi_f / (q * Na))
 
 
 # ---------------------------------------------------------------------------
@@ -224,15 +193,8 @@ def Qd(Na: float, T: float = 300.0) -> float:
     -------
     float
         Depletion charge density [C/cm²]. Negative for p-type.
-
-    Raises
-    ------
-    NotImplementedError
-        Scheduled for Week 4.
     """
-    raise NotImplementedError(
-        "Qd: Week 4. Formula: -q * Na * x_dmax(Na, T)"
-    )
+    return -q * Na * x_dmax(Na, T)
 
 
 # ---------------------------------------------------------------------------
@@ -250,7 +212,7 @@ def Vt(
     NMOS threshold voltage [V].
 
     Gate voltage required to induce strong inversion at the surface
-    (Streetman §5.3):
+    (Streetman §5.3, §6.4.4):
 
         Vt = Vfb + 2*phi_F - Qd / Cox
 
@@ -278,12 +240,68 @@ def Vt(
     -----
     The ideal MOS case (phi_ms=0, Q_ox=0) gives Vfb=0 and simplifies to
     Vt = 2*phi_F - Qd/Cox — useful for first-order hand calculations.
-
-    Raises
-    ------
-    NotImplementedError
-        Scheduled for Week 4.
     """
-    raise NotImplementedError(
-        "Vt: Week 4. Formula: Vfb(phi_ms, Q_ox, t_ox) + 2*phi_F(Na,T) - Qd(Na,T)/Cox(t_ox)"
-    )
+    vfb  = Vfb(phi_ms, Q_ox, t_ox)
+    phi_f = phi_F(Na, T)
+    qd   = Qd(Na, T)
+    cox  = Cox(t_ox)
+    return vfb + 2.0 * phi_f - qd / cox
+
+
+# ---------------------------------------------------------------------------
+# Threshold voltage with body bias (body effect)
+# ---------------------------------------------------------------------------
+
+def Vt_body_bias(
+    Na:     float,
+    t_ox:   float,
+    Vsb:    float,
+    phi_ms: float = 0.0,
+    Q_ox:   float = 0.0,
+    T:      float = 300.0,
+) -> float:
+    """
+    NMOS threshold voltage with source-body reverse bias [V].
+
+    When a reverse bias Vsb is applied between source and body, the
+    depletion region widens and VT increases. The body effect term adds
+    to the zero-bias threshold (Streetman §6.4.4):
+
+        Vt(Vsb) = Vt0 + gamma * (sqrt(2*phi_F + Vsb) - sqrt(2*phi_F))
+
+    where the body-effect coefficient gamma is:
+
+        gamma = sqrt(2 * q * eps_Si * Na) / Cox
+
+    Parameters
+    ----------
+    Na : float
+        Substrate acceptor concentration [cm^-3].
+    t_ox : float
+        Oxide thickness [cm].
+    Vsb : float
+        Source-to-body reverse bias [V]. Must be >= 0 for NMOS (body
+        is more negative than source). Use positive values here;
+        the formula adds to Vt (correct direction for NMOS).
+    phi_ms : float
+        Metal-semiconductor work-function difference [V]. Default 0.
+    Q_ox : float
+        Fixed oxide charge density [C/cm²]. Default 0.
+    T : float
+        Temperature [K]. Default 300 K.
+
+    Returns
+    -------
+    float
+        Threshold voltage Vt(Vsb) [V].
+
+    Notes
+    -----
+    At Vsb = 0 this reduces exactly to Vt(). The body effect always
+    raises VT for NMOS (Vsb >= 0 increases depletion charge).
+    """
+    vt0   = Vt(Na, t_ox, phi_ms, Q_ox, T)
+    phi_f = phi_F(Na, T)
+    cox   = Cox(t_ox)
+    gamma = np.sqrt(2.0 * q * eps_Si_abs * Na) / cox
+    return vt0 + gamma * (np.sqrt(2.0 * phi_f + Vsb) - np.sqrt(2.0 * phi_f))

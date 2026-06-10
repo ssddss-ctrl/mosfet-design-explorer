@@ -101,12 +101,12 @@ class TestEffectiveDOS:
 class TestMassActionLaw:
 
     @pytest.mark.parametrize("Na,Nd", [
-        (0.0,  1e15),    # lightly n-doped
-        (0.0,  1e17),    # moderately n-doped
-        (0.0,  1e20),    # heavily n-doped
-        (1e15, 0.0),     # lightly p-doped
-        (1e17, 0.0),     # moderately p-doped
-        (1e15, 1e16),    # compensated n-type
+        (0.0,  1e15),
+        (0.0,  1e17),
+        (0.0,  1e20),
+        (1e15, 0.0),
+        (1e17, 0.0),
+        (1e15, 1e16),
     ])
     def test_mass_action(self, Na, Nd):
         """n0 * p0 must equal ni² to machine precision (Streetman eq. 3-18)."""
@@ -163,8 +163,7 @@ class TestFermiLevel:
     def test_EF_symmetric(self):
         """
         EF−Ei for n-type and p-type at the same doping should be equal
-        in magnitude to within 1 meV. Small asymmetry is expected because
-        Nc ≠ Nv (Ei sits slightly above midgap).
+        in magnitude to within 1 meV.
         """
         N = 1e17
         EF_n = fermi_level(Na=0.0, Nd=N)
@@ -279,44 +278,3 @@ class TestConductivityResistivity:
         sig_p = conductivity(Na=1e17, Nd=0.0)
         assert sig_n > 10 * sig_i
         assert sig_p > 10 * sig_i
-
-
-# ===========================================================================
-# MOS capacitor skeleton — stubs must raise NotImplementedError
-# ===========================================================================
-
-class TestMosCapacitorSkeleton:
-    """
-    Verifies the Week 3 skeleton functions exist with correct signatures
-    and raise NotImplementedError ahead of Week 4 implementation.
-    """
-
-    def test_Cox_not_implemented(self):
-        from mosfet_explorer.mos_capacitor import Cox
-        with pytest.raises(NotImplementedError):
-            Cox(5e-7)
-
-    def test_phi_F_not_implemented(self):
-        from mosfet_explorer.mos_capacitor import phi_F
-        with pytest.raises(NotImplementedError):
-            phi_F(1e17)
-
-    def test_Vfb_not_implemented(self):
-        from mosfet_explorer.mos_capacitor import Vfb
-        with pytest.raises(NotImplementedError):
-            Vfb(phi_ms=-0.9, Q_ox=0.0, t_ox=5e-7)
-
-    def test_x_dmax_not_implemented(self):
-        from mosfet_explorer.mos_capacitor import x_dmax
-        with pytest.raises(NotImplementedError):
-            x_dmax(1e17)
-
-    def test_Qd_not_implemented(self):
-        from mosfet_explorer.mos_capacitor import Qd
-        with pytest.raises(NotImplementedError):
-            Qd(1e17)
-
-    def test_Vt_not_implemented(self):
-        from mosfet_explorer.mos_capacitor import Vt
-        with pytest.raises(NotImplementedError):
-            Vt(Na=1e17, t_ox=5e-7)
