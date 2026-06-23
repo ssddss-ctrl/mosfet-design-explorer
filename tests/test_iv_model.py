@@ -29,6 +29,10 @@ from mosfet_explorer.iv_model import (
     ID_vs_VDS,
     ID_vs_VGS,
     g_channel,
+    g_ds_saturation,
+    ID_subthreshold,
+    ID_extended,
+    ID_vs_VGS_extended,
     CUTOFF,
     TRIODE,
     SATURATION,
@@ -44,6 +48,11 @@ L    = 1e-4     # cm
 T_OX = 10e-7   # cm  (10 nm)
 VT   = 0.6     # V
 MU_N = 200     # cm²/V·s
+
+# Week 7: shared doping/oxide for subthreshold tests (same geometry,
+# explicit Na since subthreshold functions need it for Cd/n_factor)
+NA_TEST = 1e17    # cm^-3
+TOX_TEST = 10e-7  # cm (10 nm)
 
 
 # ===========================================================================
@@ -221,7 +230,7 @@ class TestID:
     def test_ID_sat_constant_beyond_pinchoff(self):
         """
         For VDS > VDS_sat, ID should be the same (current saturation,
-        V1 model has no channel-length modulation).
+        V1 model has no channel-length modulation, i.e. lam=0 default).
         """
         VGS = 3.0
         id_sat_1 = ID(VGS, 3.0, VT, W, L, MU_N, T_OX)   # VDS > VDS_sat=2.4
@@ -391,3 +400,259 @@ class TestGChannel:
         gs = [g_channel(vgs, VT, W, L, MU_N, T_OX) for vgs in [1.0, 2.0, 3.0, 4.0]]
         for i in range(len(gs) - 1):
             assert gs[i] < gs[i + 1]
+
+
+# ===========================================================================
+# Week 7: ID with channel-length modulation
+# ===========================================================================
+
+class TestChannelLengthModulation:
+
+    def test_lam_zero_recovers_V1(self):
+        """lam=0.0 (default) must reproduce the V1 saturation current
+        exactly -- this is the backward-compatibility contract."""
+        result_default = ID(3.0, 5.0, VT, W, L, MU_N, T_OX)
+        result_explicit_zero = ID(3.0, 5.0, VT, W, L, MU_N, T_OX, lam=0.0)
+        assert result_default == result_explicit_zero
+
+    def test_lam_zero_matches_ex62(self):
+        """With lam=0, still matches Streetman Example 6-2 saturation value."""
+        result = ID(3.0, 5.0, VT, W, L, MU_N, T_OX, lam=0.0)
+        assert abs(result - 4.97e-3) / 4.97e-3 < 0.01
+
+    def test_lam_increases_ID_in_saturation(self):
+        """Positive lam must increase ID above the ideal (lam=0) value
+        in saturation, since (1+lam*VDS) > 1 for VDS > 0."""
+        id_ideal = ID(3.0, 5.0, VT, W, L, MU_N, T_OX, lam=0.0)
+        id_clm = ID(3.0, 5.0, VT, W, L, MU_N, T_OX, lam=0.05)
+        assert id_clm > id_ideal
+
+    def test_lam_known_value(self):
+        """
+        Hand-traced: VGS=3, VDS=5, VT=0.6, lam=0.05 -> ID ~6.21e-3 A
+        (ideal 4.97e-3 A scaled by 1+0.05*5=1.25).
+        """
+        result = ID(3.0, 5.0, VT, W, L, MU_N, T_OX, lam=0.05)
+        expected = 4.97e-3 * 1.25
+        assert abs(result - expected) / expected < 0.01
+
+    def test_lam_does_not_affect_triode(self):
+        """CLM only modifies the saturation branch (Eq. 6-71); triode
+        current must be identical regardless of lam."""
+        id_no_clm = ID(2.0, 0.5, VT, W, L, MU_N, T_OX, lam=0.0)
+        id_with_clm = ID(2.0, 0.5, VT, W, L, MU_N, T_OX, lam=0.08)
+        assert id_no_clm == id_with_clm
+
+    def test_lam_does_not_affect_cutoff(self):
+        """ID must remain exactly 0 below VT regardless of lam."""
+        assert ID(0.3, 2.0, VT, W, L, MU_N, T_OX, lam=0.1) == 0.0
+
+
+# ===========================================================================
+# Week 7: g_ds_saturation — output conductance from CLM
+# ===========================================================================
+
+class TestGdsSaturation:
+
+    def test_gds_zero_when_lam_zero(self):
+        """No CLM -> zero output conductance (infinite output impedance,
+        the V1 idealization)."""
+        result = g_ds_saturation(3.0, 5.0, VT, W, L, MU_N, T_OX, lam=0.0)
+        assert result == 0.0
+
+    def test_gds_zero_in_cutoff(self):
+        """gds must be 0 below VT regardless of lam."""
+        result = g_ds_saturation(0.3, 5.0, VT, W, L, MU_N, T_OX, lam=0.05)
+        assert result == 0.0
+
+    def test_gds_positive_with_clm(self):
+        """Positive lam must give positive output conductance."""
+        result = g_ds_saturation(3.0, 5.0, VT, W, L, MU_N, T_OX, lam=0.05)
+        assert result > 0
+
+    def test_gds_known_value(self):
+        """
+        Hand-traced: VGS=3, VT=0.6, lam=0.05 -> gds ~2.49e-4 S
+        (= ID_sat(lam=0) * lam = 4.97e-3 * 0.05).
+        """
+        result = g_ds_saturation(3.0, 5.0, VT, W, L, MU_N, T_OX, lam=0.05)
+        expected = 4.97e-3 * 0.05
+        assert abs(result - expected) / expected < 0.01
+
+    def test_gds_matches_numerical_derivative(self):
+        """gds should match dID/dVDS via finite difference in saturation."""
+        VGS, lam = 3.0, 0.05
+        VDS = 5.0
+        eps = 1e-5
+        numerical = (ID(VGS, VDS + eps, VT, W, L, MU_N, T_OX, lam) -
+                     ID(VGS, VDS, VT, W, L, MU_N, T_OX, lam)) / eps
+        analytic = g_ds_saturation(VGS, VDS, VT, W, L, MU_N, T_OX, lam)
+        assert abs(numerical - analytic) / analytic < 1e-3
+
+    def test_gds_scales_linearly_with_lam(self):
+        """gds ∝ lam at fixed VGS (Eq. 6-71 differentiated)."""
+        g1 = g_ds_saturation(3.0, 5.0, VT, W, L, MU_N, T_OX, lam=0.02)
+        g2 = g_ds_saturation(3.0, 5.0, VT, W, L, MU_N, T_OX, lam=0.04)
+        assert abs(g2 / g1 - 2.0) < 1e-9
+
+
+# ===========================================================================
+# Week 7: ID_subthreshold — weak-inversion current
+# ===========================================================================
+
+class TestIDSubthreshold:
+
+    def test_subthreshold_positive(self):
+        """Subthreshold current must be positive for any VGS, VDS > 0."""
+        result = ID_subthreshold(0.5, 2.0, VT, NA_TEST, TOX_TEST, W, L, MU_N)
+        assert result > 0
+
+    def test_subthreshold_known_value(self):
+        """
+        Hand-traced: VGS=0.5 (100mV below VT=0.6), VDS=2.0, Na=1e17,
+        t_ox=10nm -> ID ~1.65e-8 A (16.5 nA). Allow 15% tolerance for
+        the hand-trace rounding of n/Cd.
+        """
+        result = ID_subthreshold(0.5, 2.0, VT, NA_TEST, TOX_TEST, W, L, MU_N)
+        assert 1.3e-8 < result < 2.0e-8, (
+            f"ID_subthreshold = {result:.3e} A, expected ~1.65e-8"
+        )
+
+    def test_subthreshold_increases_exponentially_with_VGS(self):
+        """ID should increase by roughly a fixed ratio per fixed step in
+        VGS in the subthreshold region (exponential dependence,
+        Eq. 6-65)."""
+        VDS = 2.0
+        vgs_vals = [0.3, 0.4, 0.5, 0.6]
+        ids = [ID_subthreshold(v, VDS, VT, NA_TEST, TOX_TEST, W, L, MU_N)
+               for v in vgs_vals]
+        ratios = [ids[i + 1] / ids[i] for i in range(len(ids) - 1)]
+        # Ratios should all be roughly similar (exponential = constant
+        # ratio per fixed VGS step), within 10% of each other.
+        for r in ratios[1:]:
+            assert abs(r - ratios[0]) / ratios[0] < 0.10
+
+    def test_subthreshold_matches_S_definition(self):
+        """
+        Cross-check against mos_capacitor.subthreshold_swing: a ΔVGS of
+        S volts should change ID by exactly one decade (factor of 10).
+        Now that subthreshold_swing() uses the exact ln(10) (rather than
+        the textbook's rounded 2.3 -- see mos_capacitor.py docstring),
+        this holds to numerical precision.
+        """
+        from mosfet_explorer.mos_capacitor import subthreshold_swing
+        S = subthreshold_swing(NA_TEST, TOX_TEST)
+        VDS = 2.0
+        VGS_1 = VT - 0.3
+        VGS_2 = VGS_1 + S
+        id_1 = ID_subthreshold(VGS_1, VDS, VT, NA_TEST, TOX_TEST, W, L, MU_N)
+        id_2 = ID_subthreshold(VGS_2, VDS, VT, NA_TEST, TOX_TEST, W, L, MU_N)
+        ratio = id_2 / id_1
+        assert abs(ratio - 10.0) / 10.0 < 1e-9, (
+            f"ID ratio over one S = {ratio:.6f}, expected exactly 10.0"
+        )
+
+    def test_subthreshold_weakly_dependent_on_VDS_above_few_kT(self):
+        """
+        Per Eq. 6-65, once VDS exceeds a few kT/q, the (1-exp(-VDS/kT))
+        factor saturates near 1, so further VDS increases barely change
+        ID (textbook's stated approximation).
+        """
+        id_at_1V = ID_subthreshold(0.5, 1.0, VT, NA_TEST, TOX_TEST, W, L, MU_N)
+        id_at_3V = ID_subthreshold(0.5, 3.0, VT, NA_TEST, TOX_TEST, W, L, MU_N)
+        assert abs(id_at_3V - id_at_1V) / id_at_1V < 0.05
+
+    def test_subthreshold_zero_at_VDS_zero(self):
+        """At VDS=0, the (1-exp(0))=0 factor forces ID to exactly 0."""
+        result = ID_subthreshold(0.5, 0.0, VT, NA_TEST, TOX_TEST, W, L, MU_N)
+        assert result == 0.0
+
+
+# ===========================================================================
+# Week 7: ID_extended — stitched subthreshold + strong inversion
+# ===========================================================================
+
+class TestIDExtended:
+
+    def test_extended_matches_subthreshold_below_VT(self):
+        """Below VT, ID_extended must equal ID_subthreshold exactly."""
+        VGS, VDS = 0.4, 2.0
+        expected = ID_subthreshold(VGS, VDS, VT, NA_TEST, TOX_TEST, W, L, MU_N)
+        result = ID_extended(VGS, VDS, VT, NA_TEST, TOX_TEST, W, L, MU_N)
+        assert result == expected
+
+    def test_extended_matches_ID_above_VT(self):
+        """At/above VT, ID_extended must equal ID() exactly (same lam)."""
+        VGS, VDS, lam = 3.0, 5.0, 0.05
+        expected = ID(VGS, VDS, VT, W, L, MU_N, TOX_TEST, lam)
+        result = ID_extended(VGS, VDS, VT, NA_TEST, TOX_TEST, W, L, MU_N, lam=lam)
+        assert result == expected
+
+    def test_extended_nonzero_below_VT_unlike_ideal_ID(self):
+        """
+        The key Week 7 behavior: ID_extended is nonzero below VT, where
+        plain ID() is hard-zero. This is the basis of the ideal-vs-
+        nonideal overlay.
+        """
+        VGS, VDS = 0.5, 2.0
+        id_ideal = ID(VGS, VDS, VT, W, L, MU_N, TOX_TEST)
+        id_nonideal = ID_extended(VGS, VDS, VT, NA_TEST, TOX_TEST, W, L, MU_N)
+        assert id_ideal == 0.0
+        assert id_nonideal > 0.0
+
+    def test_extended_continuous_near_VT(self):
+        """
+        ID_extended should not show a wild discontinuity right at VT --
+        the subthreshold exponential and the square-law curve should be
+        of comparable order of magnitude at VGS=VT (both small near
+        threshold), even though they are not mathematically forced to
+        be perfectly continuous in this simple two-piece model.
+        """
+        VDS = 2.0
+        eps = 1e-4
+        id_below = ID_extended(VT - eps, VDS, VT, NA_TEST, TOX_TEST, W, L, MU_N)
+        id_above = ID_extended(VT + eps, VDS, VT, NA_TEST, TOX_TEST, W, L, MU_N)
+        # Both should be small and positive (near pinch-on); just check
+        # neither is absurdly larger than the other (within 100x).
+        assert id_below > 0
+        ratio = max(id_above, 1e-15) / max(id_below, 1e-15)
+        assert ratio < 100.0
+
+
+# ===========================================================================
+# Week 7: ID_vs_VGS_extended — vectorised full-range transfer curve
+# ===========================================================================
+
+class TestIDvsVGSExtended:
+
+    def test_output_shape(self):
+        VGS_arr = np.linspace(VT - 0.5, 4.0, 80)
+        result = ID_vs_VGS_extended(VGS_arr, 2.0, VT, NA_TEST, TOX_TEST,
+                                     W, L, MU_N)
+        assert result.shape == (80,)
+
+    def test_nonzero_below_VT(self):
+        """Unlike ID_vs_VGS, the extended version must be nonzero below VT."""
+        VGS_arr = np.linspace(VT - 0.5, VT - 0.05, 20)
+        result = ID_vs_VGS_extended(VGS_arr, 2.0, VT, NA_TEST, TOX_TEST,
+                                     W, L, MU_N)
+        assert np.all(result > 0.0)
+
+    def test_monotone_increasing_away_from_VT_seam(self):
+        """
+        Transfer curve should be monotone non-decreasing, EXCEPT
+        possibly at the single point where the model switches from the
+        subthreshold exponential branch to the square-law branch (the
+        documented seam -- see
+        TestIDExtended.test_extended_continuous_near_VT, which already
+        allows up to 100x mismatch there by design, since the two
+        branches are not forced to be perfectly continuous).
+        """
+        VGS_arr = np.linspace(VT - 0.5, 4.0, 200)
+        result = ID_vs_VGS_extended(VGS_arr, 5.0, VT, NA_TEST, TOX_TEST,
+                                     W, L, MU_N)
+        diffs = np.diff(result)
+        n_negative = np.sum(diffs < -1e-20)
+        assert n_negative <= 1, (
+            f"Expected at most 1 negative step (the VT seam), found {n_negative}"
+        )

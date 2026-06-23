@@ -28,6 +28,9 @@ from mosfet_explorer.mos_capacitor import (
     Qd,
     Vt,
     Vt_body_bias,
+    Cd,
+    n_factor,
+    subthreshold_swing,
 )
 
 
@@ -375,3 +378,160 @@ class TestVtBodyBias:
             f"Body shift at Na=1e18 ({shift_high:.4f} V) should exceed "
             f"Na=1e16 ({shift_low:.4f} V)"
         )
+
+
+# ===========================================================================
+# Week 7: Cd — depletion-layer capacitance (subthreshold)
+# ===========================================================================
+
+class TestCd:
+
+    def test_Cd_positive(self):
+        """Depletion capacitance must be positive for any physical doping."""
+        for Na in [1e15, 1e17, 1e18]:
+            assert Cd(Na) > 0
+
+    def test_Cd_formula(self):
+        """Cd = eps_Si_abs / x_dmax (Streetman §6.5.7, Fig. 6-38b)."""
+        Na = 1e17
+        expected = C.eps_Si_abs / x_dmax(Na)
+        result = Cd(Na)
+        assert abs(result - expected) / expected < 1e-9
+
+    def test_Cd_known_value_1e17_10nm(self):
+        """
+        Hand-traced: Na=1e17 -> x_dmax ~104 nm -> Cd ~9.9e-8 F/cm^2.
+        Allow 10% tolerance since x_dmax itself has model-dependent ni.
+        """
+        result = Cd(1e17)
+        assert 0.85e-7 < result < 1.15e-7, (
+            f"Cd(1e17) = {result:.3e} F/cm^2, expected ~9.9e-8"
+        )
+
+    def test_Cd_decreases_with_Na(self):
+        """
+        Higher doping -> narrower x_dmax -> but Cd = eps/x_dmax means
+        Cd actually INCREASES as x_dmax shrinks (thinner "capacitor gap").
+        Verify this direction explicitly since it's easy to get backwards.
+        """
+        assert Cd(1e15) < Cd(1e17) < Cd(1e18)
+
+
+# ===========================================================================
+# Week 7: n_factor — subthreshold slope factor
+# ===========================================================================
+
+class TestNFactor:
+
+    def test_n_factor_greater_than_one(self):
+        """n = 1 + (Cd+Cit)/Cox must exceed 1 for any physical device."""
+        for Na in [1e15, 1e17, 1e18]:
+            assert n_factor(Na, 5e-7) > 1.0
+
+    def test_n_factor_formula(self):
+        """Verify n_factor against direct formula evaluation."""
+        Na, t_ox = 1e17, 10e-7
+        expected = 1.0 + Cd(Na) / Cox(t_ox)
+        result = n_factor(Na, t_ox)
+        assert abs(result - expected) < 1e-12
+
+    def test_n_factor_known_value_1e17_10nm(self):
+        """Hand-traced: n ~ 1.288 at Na=1e17, t_ox=10nm."""
+        result = n_factor(1e17, 10e-7)
+        assert 1.20 < result < 1.40, (
+            f"n_factor(1e17, 10nm) = {result:.4f}, expected ~1.288"
+        )
+
+    def test_n_factor_with_Cit(self):
+        """Adding interface trap capacitance must increase n."""
+        Na, t_ox = 1e17, 10e-7
+        n_no_cit = n_factor(Na, t_ox, Cit=0.0)
+        n_with_cit = n_factor(Na, t_ox, Cit=5e-8)
+        assert n_with_cit > n_no_cit
+
+    def test_n_factor_increases_as_tox_increases(self):
+        """
+        Thicker oxide -> smaller Cox -> larger Cd/Cox ratio -> larger n
+        (consistent with thicker oxide degrading subthreshold slope).
+        """
+        Na = 1e17
+        assert n_factor(Na, 5e-7) < n_factor(Na, 10e-7) < n_factor(Na, 20e-7)
+
+    def test_n_factor_has_weak_temperature_dependence(self):
+        """
+        n is not perfectly T-independent: Cd depends on x_dmax, which
+        depends on phi_F(Na, T), which decreases with T. Confirm n
+        changes (in the increasing direction) with T, consistent with
+        phi_F(Na,T) decreasing T -> x_dmax shrinking -> Cd growing.
+        """
+        Na, t_ox = 1e17, 10e-7
+        n_300 = n_factor(Na, t_ox, T=300.0)
+        n_400 = n_factor(Na, t_ox, T=400.0)
+        assert n_400 > n_300, (
+            f"n(400K)={n_400:.4f} should exceed n(300K)={n_300:.4f}"
+        )
+
+
+# ===========================================================================
+# Week 7: subthreshold_swing — S
+# ===========================================================================
+
+class TestSubthresholdSwing:
+
+    def test_S_positive(self):
+        """Subthreshold swing must be positive."""
+        assert subthreshold_swing(1e17, 10e-7) > 0
+
+    def test_S_formula(self):
+        """S = ln(10) * Vth(T) * n_factor (Streetman Eq. 6-66, exact form)."""
+        Na, t_ox = 1e17, 10e-7
+        expected = np.log(10.0) * C.Vth(300.0) * n_factor(Na, t_ox)
+        result = subthreshold_swing(Na, t_ox)
+        assert abs(result - expected) < 1e-12
+
+    def test_S_known_value_1e17_10nm(self):
+        """
+        Hand-traced: S ~76.6 mV/dec at Na=1e17, t_ox=10nm, 300K.
+        This is ABOVE the textbook's ideal ~60 mV/dec limit, since
+        Cd/Cox ~0.29 here, not ~0 -- expected and correct.
+        """
+        result = subthreshold_swing(1e17, 10e-7) * 1e3  # V -> mV
+        assert 65.0 < result < 90.0, (
+            f"S(1e17, 10nm) = {result:.1f} mV/dec, expected ~76.6"
+        )
+
+    def test_S_increases_with_temperature(self):
+        """S ∝ T (via Vth=kT/q), and n_factor also rises with T (see
+        TestNFactor.test_n_factor_has_weak_temperature_dependence), so
+        both effects push S up monotonically with T."""
+        Na, t_ox = 1e17, 10e-7
+        S_vals = [subthreshold_swing(Na, t_ox, T=t) for t in [250, 300, 350, 400]]
+        for i in range(len(S_vals) - 1):
+            assert S_vals[i] < S_vals[i + 1]
+
+    def test_S_increases_faster_than_linear_with_T(self):
+        """
+        S has two T-dependent factors: the explicit kT/q prefactor
+        (exactly linear in T), and n_factor itself (since Cd depends on
+        phi_F(Na,T), which decreases with T -- see
+        test_phi_F_temperature_dependence in TestPhiF). Both push S up,
+        so S should grow somewhat FASTER than linear in T, not exactly
+        linear. T=450 (not 600) is used to stay well clear of the
+        known high-T numerical edge case in carriers.fermi_level
+        (n0/ni underflow), flagged separately in the Week 4/6 build logs.
+        """
+        Na, t_ox = 1e17, 10e-7
+        S_300 = subthreshold_swing(Na, t_ox, T=300.0)
+        S_450 = subthreshold_swing(Na, t_ox, T=450.0)
+        ratio = S_450 / S_300
+        # Pure kT/q scaling alone would give exactly 1.5x. Allow some
+        # excess from n_factor's T-dependence, but bound it so a future
+        # regression (e.g. an accidental double T-dependence) gets caught.
+        assert 1.5 < ratio < 1.8, (
+            f"S(450)/S(300) = {ratio:.4f}, expected modestly above 1.5"
+        )
+
+    def test_S_worsens_with_thicker_oxide(self):
+        """Thicker oxide -> larger n -> larger (worse) S."""
+        Na = 1e17
+        assert subthreshold_swing(Na, 5e-7) < subthreshold_swing(Na, 20e-7)
