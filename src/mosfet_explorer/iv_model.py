@@ -17,8 +17,9 @@ V1 (Weeks 4-6, still default behavior — unchanged):
 
 V2 additions (Week 7 — opt-in via new keyword args, all default to the
 exact V1 behavior so every existing call site and test is unaffected):
-- Channel-length modulation: saturation current gains a (1 + lambda*VDS)
-  factor (Eq. 6-71). lambda=0.0 by default recovers V1 exactly.
+- Channel-length modulation: saturation current gains a
+  (1 + lambda*(VDS - VDS_sat)) factor. lambda=0.0 by default recovers
+  V1 exactly.
 - Subthreshold conduction: below VT, current is no longer hard-zeroed.
   ID_subthreshold() implements the exponential weak-inversion model
   (Eq. 6-65) using Cd/n_factor from mos_capacitor.py. ID_extended()
@@ -44,6 +45,21 @@ Streetman & Banerjee, Solid State Electronic Devices, 7th ed.
         Eq. 6-69  ID ∝ 1/(L - ΔL)
         Eq. 6-70  ΔL/L = lambda * VD
         Eq. 6-71  Saturation ID with channel-length modulation
+
+        Implementation note on Eq. 6-71: Streetman writes the CLM
+        factor as (1 + lambda*VD) using the full drain voltage. Applied
+        literally in a piecewise model, this creates a discontinuity
+        at VDS = VDS_sat, since the triode branch (which has no CLM
+        term) and the saturation branch (now scaled up by
+        1+lambda*VDS_sat) disagree at the boundary by exactly that
+        factor. This module instead uses the standard SPICE-style
+        formulation (1 + lambda*(VDS - VDS_sat)), which is algebraically
+        equivalent to Eq. 6-71 deep in saturation (VDS >> VDS_sat) but
+        is exactly 1 at VDS = VDS_sat, preserving continuity with the
+        triode branch. Caught via a Week 7 visual artifact (sharp jumps
+        in the ID-VDS family plot, and a bump/dip on the ID-VGS
+        semilog overlay at the saturation/triode crossover) -- see
+        Week 7 build log addendum.
 """
 
 import numpy as np
@@ -191,14 +207,18 @@ def ID(
 
     Triode     (VGS ≥ VT, VDS < VGS - VT):
         ID = kN * [(VGS - VT)*VDS - 0.5*VDS²]        (Eq. 6-49)
-        (CLM does not apply in triode — lam is unused here, matching
-        Streetman, where Eq. 6-71 only modifies the saturation branch.)
+        (CLM does not apply in triode — lam is unused here.)
 
     Saturation (VGS ≥ VT, VDS ≥ VGS - VT):
-        ID = (kN/2) * (VGS - VT)² * (1 + lam*VDS)     (Eq. 6-71)
-        (lam=0 recovers the V1 ideal saturation current, Eq. 6-53,
-        exactly — this is the default, so all V1 call sites and tests
-        are unaffected.)
+        ID = (kN/2) * (VGS - VT)² * (1 + lam*(VDS - VDS_sat))
+
+        This is the continuity-preserving form of Eq. 6-71 (see module
+        docstring for why (VDS - VDS_sat) is used instead of the raw
+        VDS that Streetman's text writes): at VDS = VDS_sat the factor
+        is exactly 1, so saturation current exactly matches the triode
+        branch at the boundary, for ANY value of lam. lam=0 recovers
+        the V1 ideal saturation current, Eq. 6-53, exactly — this is
+        the default, so all V1 call sites and tests are unaffected.
 
     Parameters
     ----------
@@ -236,9 +256,10 @@ def ID(
     >>> ID(3, 5.0, 0.6, 25e-4, 1e-4, 200, 10e-7)
     ~4.97e-3 A
 
-    Same point with channel-length modulation, lambda=0.05/V:
+    Same point with channel-length modulation, lambda=0.05/V
+    (VDS_sat=2.4V, so the CLM factor uses VDS-VDS_sat=2.6V):
     >>> ID(3, 5.0, 0.6, 25e-4, 1e-4, 200, 10e-7, lam=0.05)
-    ~6.21e-3 A
+    ~5.62e-3 A
     """
     kn = kN(W, L, mu_n, t_ox)
     reg = region(VGS, VDS, VT)
@@ -249,9 +270,9 @@ def ID(
         # Eq. 6-49: integrate Qn(x) from source to drain via GCA
         return kn * ((VGS - VT) * VDS - 0.5 * VDS ** 2)
     else:  # SATURATION
-        # Eq. 6-71: Eq. 6-53 scaled by (1 + lambda*VDS)
         Vov = VGS - VT
-        return 0.5 * kn * Vov ** 2 * (1.0 + lam * VDS)
+        vds_sat = Vov
+        return 0.5 * kn * Vov ** 2 * (1.0 + lam * (VDS - vds_sat))
 
 
 # ---------------------------------------------------------------------------
@@ -355,7 +376,7 @@ def ID_extended(
     inversion (with optional channel-length modulation) above VT [A].
 
         VGS < VT  → ID_subthreshold()    (Eq. 6-65)
-        VGS >= VT → ID() with lam         (Eq. 6-49 / Eq. 6-71)
+        VGS >= VT → ID() with lam         (Eq. 6-49 / Eq. 6-71-style CLM)
 
     This is the "nonideal" curve for ideal-vs-nonideal overlay plots —
     set lam=0 and this still differs from the pure V1 ID() because it
@@ -524,6 +545,12 @@ def ID_vs_VGS_extended(
     with lam=0 for the ideal/V1 comparison curve, which is exactly zero
     below VT and has no CLM).
 
+    Note: at fixed VDS, sweeping VGS upward can cross from saturation
+    back into triode once VGS-VT exceeds VDS (large overdrive relative
+    to a modest fixed VDS) — both branches remain continuous and
+    monotonically increasing across that crossing now that ID()'s CLM
+    term is referenced to (VDS - VDS_sat) rather than raw VDS.
+
     Parameters
     ----------
     VGS_array : np.ndarray
@@ -536,7 +563,7 @@ def ID_vs_VGS_extended(
     Na : float
         Substrate acceptor concentration [cm^-3].
     t_ox : float
-        Gate oxide thickness [cm].
+        Oxide thickness [cm].
     W : float
         Channel width [cm].
     L : float
@@ -576,8 +603,7 @@ def g_channel(VGS: float, VT: float, W: float, L: float,
         g = (W/L) * µn * Cox * (VGS - VT)
 
     Unaffected by channel-length modulation, since CLM only modifies the
-    saturation branch (Eq. 6-71), not the triode-region derivative at
-    VDS=0.
+    saturation branch, not the triode-region derivative at VDS=0.
 
     Parameters
     ----------
@@ -613,11 +639,17 @@ def g_ds_saturation(VGS: float, VDS: float, VT: float, W: float, L: float,
     """
     Output conductance in saturation, gds = dID/dVDS [S].
 
-    With channel-length modulation (Eq. 6-71), the saturation current is
-    no longer flat in VDS, giving a finite output conductance:
+    With channel-length modulation, the saturation current is no longer
+    flat in VDS, giving a finite output conductance:
 
-        ID_sat = (kN/2)(VGS-VT)^2 * (1 + lambda*VDS)
-        gds = dID_sat/dVDS = (kN/2)(VGS-VT)^2 * lambda = ID_sat(lam=0) * lambda
+        ID_sat = (kN/2)(VGS-VT)^2 * (1 + lambda*(VDS - VDS_sat))
+        gds = dID_sat/dVDS = (kN/2)(VGS-VT)^2 * lambda
+            = ID_sat(lam=0) * lambda
+
+    (The continuity-preserving (VDS - VDS_sat) form used in ID() doesn't
+    change this derivative versus the raw-VDS form Streetman writes,
+    since VDS_sat doesn't depend on VDS — only the absolute current
+    level at any given VDS differs, not its slope.)
 
     In the V1 model (lambda=0) this is identically zero — an infinite
     output impedance, which is the idealization CLM corrects.

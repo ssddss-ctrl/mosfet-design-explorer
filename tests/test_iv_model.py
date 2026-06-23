@@ -422,22 +422,31 @@ class TestChannelLengthModulation:
 
     def test_lam_increases_ID_in_saturation(self):
         """Positive lam must increase ID above the ideal (lam=0) value
-        in saturation, since (1+lam*VDS) > 1 for VDS > 0."""
+        in saturation, since (1+lam*(VDS-VDS_sat)) > 1 for VDS > VDS_sat."""
         id_ideal = ID(3.0, 5.0, VT, W, L, MU_N, T_OX, lam=0.0)
         id_clm = ID(3.0, 5.0, VT, W, L, MU_N, T_OX, lam=0.05)
         assert id_clm > id_ideal
 
     def test_lam_known_value(self):
         """
-        Hand-traced: VGS=3, VDS=5, VT=0.6, lam=0.05 -> ID ~6.21e-3 A
-        (ideal 4.97e-3 A scaled by 1+0.05*5=1.25).
+        Hand-traced: VGS=3, VDS=5, VT=0.6, lam=0.05 -> VDS_sat=2.4,
+        (VDS-VDS_sat)=2.6 -> ID ~5.62e-3 A
+        (ideal 4.97e-3 A scaled by 1+0.05*2.6=1.13).
+
+        Note: this uses the continuity-preserving (VDS - VDS_sat) form
+        of the CLM factor, not the raw-VDS form Streetman's text writes
+        literally -- see the "Implementation note on Eq. 6-71" in the
+        iv_model.py module docstring for why. The raw-VDS form was the
+        Week 7 first-draft implementation and produced a discontinuity
+        at VDS_sat (caught visually -- sharp jumps in the ID-VDS family
+        plot and a bump/dip in the ID-VGS semilog overlay).
         """
         result = ID(3.0, 5.0, VT, W, L, MU_N, T_OX, lam=0.05)
-        expected = 4.97e-3 * 1.25
+        expected = 4.97e-3 * 1.13
         assert abs(result - expected) / expected < 0.01
 
     def test_lam_does_not_affect_triode(self):
-        """CLM only modifies the saturation branch (Eq. 6-71); triode
+        """CLM only modifies the saturation branch; triode
         current must be identical regardless of lam."""
         id_no_clm = ID(2.0, 0.5, VT, W, L, MU_N, T_OX, lam=0.0)
         id_with_clm = ID(2.0, 0.5, VT, W, L, MU_N, T_OX, lam=0.08)
@@ -446,6 +455,45 @@ class TestChannelLengthModulation:
     def test_lam_does_not_affect_cutoff(self):
         """ID must remain exactly 0 below VT regardless of lam."""
         assert ID(0.3, 2.0, VT, W, L, MU_N, T_OX, lam=0.1) == 0.0
+
+    def test_lam_preserves_continuity_at_VDS_sat(self):
+        """
+        The exact gap the Week 7 visual artifact exposed: with lam != 0,
+        ID must still be continuous at VDS = VDS_sat. The
+        (VDS - VDS_sat) formulation guarantees this by construction,
+        for any lam, since the factor (1 + lam*(VDS-VDS_sat)) is
+        exactly 1 right at the boundary.
+        """
+        VGS = 3.0
+        vdsat = VDS_sat(VGS, VT)   # 2.4 V
+        eps = 1e-6
+        for lam in [0.02, 0.05, 0.1]:
+            id_triode_side = ID(VGS, vdsat - eps, VT, W, L, MU_N, T_OX, lam)
+            id_sat_side = ID(VGS, vdsat, VT, W, L, MU_N, T_OX, lam)
+            assert abs(id_triode_side - id_sat_side) / id_sat_side < 1e-4, (
+                f"lam={lam}: discontinuity at VDS_sat -- "
+                f"triode={id_triode_side:.6e}, sat={id_sat_side:.6e}"
+            )
+
+    def test_lam_continuity_holds_across_VGS_sweep(self):
+        """
+        Broader sweep version of the continuity check: for many VGS
+        values (and hence many different VDS_sat crossover points),
+        ID must remain continuous at each one's own VDS_sat once CLM
+        is active. This is the scenario in app.py's ID-VDS family plot,
+        where multiple VGS curves each cross saturation at a different
+        VDS.
+        """
+        lam = 0.05
+        eps = 1e-6
+        for VGS in [1.0, 1.5, 2.0, 2.5, 3.0, 4.0]:
+            vdsat = VDS_sat(VGS, VT)
+            id_below = ID(VGS, vdsat - eps, VT, W, L, MU_N, T_OX, lam)
+            id_at = ID(VGS, vdsat, VT, W, L, MU_N, T_OX, lam)
+            assert abs(id_below - id_at) / max(id_at, 1e-15) < 1e-4, (
+                f"VGS={VGS}: discontinuity at VDS_sat={vdsat:.3f} -- "
+                f"below={id_below:.6e}, at={id_at:.6e}"
+            )
 
 
 # ===========================================================================
@@ -473,7 +521,10 @@ class TestGdsSaturation:
     def test_gds_known_value(self):
         """
         Hand-traced: VGS=3, VT=0.6, lam=0.05 -> gds ~2.49e-4 S
-        (= ID_sat(lam=0) * lam = 4.97e-3 * 0.05).
+        (= ID_sat(lam=0) * lam = 4.97e-3 * 0.05). Unaffected by the
+        (VDS-VDS_sat) fix, since VDS_sat doesn't depend on VDS, so the
+        derivative dID/dVDS is the same either way -- only the absolute
+        current level at a given VDS changed, not its slope.
         """
         result = g_ds_saturation(3.0, 5.0, VT, W, L, MU_N, T_OX, lam=0.05)
         expected = 4.97e-3 * 0.05
@@ -536,9 +587,9 @@ class TestIDSubthreshold:
         """
         Cross-check against mos_capacitor.subthreshold_swing: a ΔVGS of
         S volts should change ID by exactly one decade (factor of 10).
-        Now that subthreshold_swing() uses the exact ln(10) (rather than
-        the textbook's rounded 2.3 -- see mos_capacitor.py docstring),
-        this holds to numerical precision.
+        subthreshold_swing() uses the exact ln(10) (not the textbook's
+        rounded 2.3 -- see mos_capacitor.py docstring), so this holds
+        to numerical precision.
         """
         from mosfet_explorer.mos_capacitor import subthreshold_swing
         S = subthreshold_swing(NA_TEST, TOX_TEST)
@@ -647,6 +698,11 @@ class TestIDvsVGSExtended:
         TestIDExtended.test_extended_continuous_near_VT, which already
         allows up to 100x mismatch there by design, since the two
         branches are not forced to be perfectly continuous).
+
+        Now that ID()'s CLM term is referenced to (VDS - VDS_sat)
+        rather than raw VDS, there is no SECOND discontinuity from
+        crossing back into triode at large VGS (fixed VDS) -- only the
+        VT seam itself remains as a possible single negative step.
         """
         VGS_arr = np.linspace(VT - 0.5, 4.0, 200)
         result = ID_vs_VGS_extended(VGS_arr, 5.0, VT, NA_TEST, TOX_TEST,
@@ -655,4 +711,31 @@ class TestIDvsVGSExtended:
         n_negative = np.sum(diffs < -1e-20)
         assert n_negative <= 1, (
             f"Expected at most 1 negative step (the VT seam), found {n_negative}"
+        )
+
+    def test_no_discontinuity_at_saturation_triode_crossover(self):
+        """
+        Regression test for the Week 7 visual bug: at a fixed, modest
+        VDS, sweeping VGS to large overdrive eventually crosses back
+        from saturation into triode (once VGS-VT > VDS). With CLM
+        active (lam != 0), this used to produce a sharp jump/dip in the
+        semilog ID-VGS overlay, because the old (1+lam*VDS) formula
+        disagreed with the triode branch at the crossover. Verify no
+        such discontinuity remains by checking every consecutive pair
+        of points changes by a bounded relative amount.
+        """
+        VDS = 1.5
+        lam = 0.07
+        VGS_arr = np.linspace(VT - 0.5, 8.0, 400)
+        result = ID_vs_VGS_extended(VGS_arr, VDS, VT, NA_TEST, TOX_TEST,
+                                     W, L, MU_N, lam=lam)
+        # Look only in strong inversion, well past the VT seam, where
+        # the saturation/triode crossover for this VDS actually occurs.
+        mask = VGS_arr > VT + 0.2
+        sub = result[mask]
+        rel_steps = np.abs(np.diff(sub)) / np.maximum(sub[:-1], 1e-15)
+        assert np.max(rel_steps) < 0.5, (
+            f"Found a step of {np.max(rel_steps)*100:.1f}% between "
+            "consecutive VGS points in strong inversion -- likely a "
+            "saturation/triode crossover discontinuity"
         )
